@@ -334,8 +334,9 @@
       syncing=true;
       setSyncStatus("Povezivanje…", false);
       dbRef.transaction(function(cur){ return cur===null ? state : cur; }); // zasij ako je prazno
-      dbRef.on("value", function(snap){ applyRemote(snap.val()); });
-      dbRef.on("cancel", function(err){ setSyncStatus("Pristup odbijen — provjerite pravila baze", false); });
+      dbRef.on("value", function(snap){ applyRemote(snap.val()); }, function(err){
+        setSyncStatus("Pristup odbijen — provjerite pravila baze", false);
+      });
       db.ref(".info/connected").on("value", function(s){
         if(s.val()===true && presRef){ const me=presRef.push(); me.onDisconnect().remove(); me.set(Date.now()); }
       });
