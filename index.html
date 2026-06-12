@@ -59,6 +59,19 @@
   .toolbar .sync{padding:4px 10px;border-radius:999px;background:#efe9db;border:1px solid #ddd3bf}
   .toolbar .sync.live{background:#e6f4ea;border-color:#bfe0c8;color:#1f7a3f;font-weight:600}
 
+  /* ---- login gate ---- */
+  #authGate{position:fixed;inset:0;z-index:50;display:none;align-items:center;justify-content:center;background:var(--desk);padding:24px}
+  body.locked #authGate{display:flex}
+  body.locked .wrap{display:none}
+  .gate-card{background:var(--paper);border:1px solid var(--paper-edge);border-radius:14px;padding:40px 44px;max-width:380px;width:100%;text-align:center;box-shadow:0 10px 44px rgba(40,34,24,.20);font-family:Georgia,"Times New Roman",serif}
+  .gate-mark{color:var(--oxblood);font-size:24px;margin-bottom:6px}
+  .gate-card h1{font-size:20px;margin:0 0 14px;letter-spacing:.2px}
+  #gateStatus{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;font-size:13.5px;color:var(--ink-soft);margin:0 0 22px;line-height:1.5}
+  .gate-btn{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;font-size:14px;font-weight:600;padding:11px 22px;border-radius:9px;border:1px solid var(--oxblood);background:var(--oxblood);color:#fff;cursor:pointer}
+  .gate-btn:hover{filter:brightness(.96)}
+  .gate-foot{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;font-size:11.5px;color:#8a8577;margin:18px 0 0}
+  @media print{#authGate{display:none!important}}
+
   /* ---- preview ---- */
   .preview{overflow:auto;background:var(--desk)}
   .infocard{width:min(820px,92%);margin:22px auto 4px;background:#fff;border:1px solid #cdc8bb;border-left:4px solid var(--gold);border-radius:8px;padding:16px 20px;font-size:13px;color:var(--ink-soft);line-height:1.5}
@@ -122,7 +135,7 @@
   }
 </style>
 </head>
-<body>
+<body class="locked">
 <div class="wrap">
   <!-- ============ FORM ============ -->
   <aside class="form-panel">
@@ -227,33 +240,35 @@
   </main>
 </div>
 
+<div id="authGate">
+  <div class="gate-card">
+    <div class="gate-mark">●</div>
+    <h1>Osnivački dokumenti udruge</h1>
+    <p id="gateStatus">Prijavite se Google računom za pristup dokumentima.</p>
+    <button id="gateBtn" class="gate-btn">Prijava Google računom</button>
+    <p class="gate-foot">Pristup imaju samo ovlašteni članovi.</p>
+  </div>
+</div>
+
 <!-- Firebase (compat) za sinkronizaciju u stvarnom vremenu. Ako se ne učita ili nije podešen config, alat radi lokalno. -->
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<!-- Vaš Firebase config stoji u zasebnoj datoteci firebase-config.js i NE dira se kad zamijenite index.html. -->
+<script src="firebase-config.js"></script>
 <script>
 (function(){
   "use strict";
   const $ = s => document.querySelector(s);
 
   /* =================== SINKRONIZACIJA =====================
-     Da bi svi vidjeli iste dokumente uživo, zalijepite svoj Firebase config:
-       1) https://console.firebase.google.com  → novi projekt (besplatno)
-       2) Build → Realtime Database → Create database (npr. europe-west1)
-       3) Project settings → Your apps → Web (</>) → kopirajte vrijednosti niže
-     Svi koji otvore isti link s istim "#room=..." dijele iste dokumente.
-     Ako ostane prazno, alat radi kao i prije (lokalno + .json).            */
-  const FIREBASE_CONFIG = {
-  apiKey: "AIzaSyB57deqRay6qTsd0H6ZymWm4qI3FHPYtnU",
-  authDomain: "sobica-457c9.firebaseapp.com",
-  databaseURL: "https://sobica-457c9-default-rtdb.europe-west1.firebasedatabase.app",
-  projectId: "sobica-457c9",
-  storageBucket: "sobica-457c9.firebasestorage.app",
-  messagingSenderId: "74210539250",
-  appId: "1:74210539250:web:bbe5a59a749a174c9b426b",
-  measurementId: "G-5BW3L3GMSW"
-};
-  const ROOM_ID = ((location.hash.match(/room=([\w-]+)/)||[])[1]) || "zajednicki-1";
+     Config se učitava iz zasebne datoteke firebase-config.js (window.FIREBASE_CONFIG).
+     Tu datoteku uredite samo jednom; zamjena index.html je ne dira.
+     Ako firebase-config.js ne postoji ili je prazan, alat radi lokalno (+ .json).   */
+  const FIREBASE_CONFIG = (typeof window!=="undefined" && window.FIREBASE_CONFIG) ? window.FIREBASE_CONFIG : {
+    apiKey: "", authDomain: "", databaseURL: "", projectId: "", appId: ""
+  };
+  const ROOM_ID = ((location.hash.match(/room=([\w-]+)/)||[])[1]) || (window.DEFAULT_ROOM) || "zajednicki-1";
   /* ======================================================= */
 
   const state = {
@@ -335,7 +350,10 @@
       syncing=true;
       setSyncStatus("Povezivanje…", false);
       dbRef.transaction(function(cur){ return cur===null ? state : cur; }); // zasij ako je prazno
-      dbRef.on("value", function(snap){ applyRemote(snap.val()); }, function(err){
+      dbRef.on("value", function(snap){ unlockApp(); applyRemote(snap.val()); }, function(err){
+        lockApp();
+        const em=(firebase.auth&&firebase.auth().currentUser&&firebase.auth().currentUser.email)||"";
+        setGate("denied", em);
         setSyncStatus("Pristup odbijen — provjerite pravila baze", false);
       });
       db.ref(".info/connected").on("value", function(s){
@@ -347,6 +365,22 @@
       });
     }catch(e){ syncing=false; setSyncStatus("Greška u bazi — radi lokalno", false); }
   }
+  function lockApp(){ document.body.classList.add("locked"); }
+  function unlockApp(){ document.body.classList.remove("locked"); }
+  function gateMsg(t){ const st=document.getElementById("gateStatus"); if(st) st.textContent=t; }
+  function setGate(mode, email){
+    const btn=document.getElementById("gateBtn");
+    if(mode==="login"){
+      if(btn){ btn.style.display="inline-block"; btn.textContent="Prijava Google računom"; btn.onclick=googleSignIn; }
+      gateMsg("Prijavite se Google računom za pristup dokumentima.");
+    } else if(mode==="denied"){
+      if(btn){ btn.style.display="inline-block"; btn.textContent="Odjava i pokušaj drugim računom"; btn.onclick=function(){ try{ firebase.auth().signOut().then(function(){ location.reload(); }); }catch(e){ location.reload(); } }; }
+      gateMsg("Račun "+(email||"")+" nema pristup ovoj sobi.");
+    } else if(mode==="loading"){
+      if(btn){ btn.style.display="none"; btn.onclick=null; }
+      gateMsg("Provjera pristupa…");
+    }
+  }
   function updateAuthUI(user){
     const btn=document.getElementById("authBtn");
     if(!btn) return;
@@ -357,34 +391,37 @@
       const provider=new firebase.auth.GoogleAuthProvider();
       firebase.auth().signInWithPopup(provider).catch(function(e){
         const c=(e&&e.code)||"";
-        if(c==="auth/unauthorized-domain") setSyncStatus("Dodajte domenu u Authentication → Settings → Authorized domains", false);
-        else if(c==="auth/operation-not-allowed") setSyncStatus("Uključite Google prijavu u Firebase konzoli", false);
-        else if(c==="auth/popup-blocked") setSyncStatus("Skočni prozor blokiran — dopustite popups pa pokušajte ponovo", false);
+        if(c==="auth/unauthorized-domain") gateMsg("Domena nije ovlaštena. Dodajte je u Firebase → Authentication → Settings → Authorized domains.");
+        else if(c==="auth/operation-not-allowed") gateMsg("Uključite Google prijavu u Firebase konzoli.");
+        else if(c==="auth/popup-blocked") gateMsg("Skočni prozor blokiran — dopustite popups pa pokušajte ponovo.");
         else if(c==="auth/popup-closed-by-user"){ /* korisnik zatvorio prozor */ }
-        else setSyncStatus("Prijava nije uspjela: "+(c||"greška"), false);
+        else gateMsg("Prijava nije uspjela: "+(c||"greška"));
       });
-    }catch(e){ setSyncStatus("Prijava nije uspjela", false); }
+    }catch(e){ gateMsg("Prijava nije uspjela."); }
   }
   function initSync(){
-    if(!FIREBASE_CONFIG.databaseURL || typeof firebase==="undefined"){ setSyncStatus("Lokalno (bez sinkronizacije)", false); return; }
+    const cfgOk = FIREBASE_CONFIG && /^https:\/\//.test(FIREBASE_CONFIG.databaseURL||"") && typeof firebase!=="undefined";
+    if(!cfgOk){ unlockApp(); setSyncStatus("Lokalno (bez sinkronizacije)", false); return; } // bez configa: lokalni alat, bez prijave
     try{
       firebase.initializeApp(FIREBASE_CONFIG);
-      if(!firebase.auth){ startDb(); return; } // bez auth modula — pravila baze moraju dopuštati pristup
-      const btn=document.getElementById("authBtn");
-      if(btn){
-        btn.style.display="inline-block";
-        btn.addEventListener("click", function(){
+      if(!firebase.auth){ unlockApp(); startDb(); return; }
+      const abtn=document.getElementById("authBtn");
+      if(abtn){
+        abtn.style.display="inline-block";
+        abtn.addEventListener("click", function(){
           const u=firebase.auth().currentUser;
           if(u){ firebase.auth().signOut().then(function(){ location.reload(); }); }
           else { googleSignIn(); }
         });
       }
+      const gbtn=document.getElementById("gateBtn");
+      if(gbtn) gbtn.onclick=googleSignIn;
       firebase.auth().onAuthStateChanged(function(user){
         updateAuthUI(user);
-        if(user){ startDb(); }
-        else { setSyncStatus("Prijavite se Google računom za sinkronizaciju", false); }
+        if(user){ setGate("loading"); startDb(); }
+        else { lockApp(); setGate("login"); setSyncStatus("Prijavite se Google računom", false); }
       });
-    }catch(e){ syncing=false; setSyncStatus("Greška u sinkronizaciji — radi lokalno", false); }
+    }catch(e){ unlockApp(); setSyncStatus("Greška u sinkronizaciji — radi lokalno", false); }
   }
 
   const esc = v => String(v==null?"":v).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));
