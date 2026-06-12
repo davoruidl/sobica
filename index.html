@@ -56,6 +56,8 @@
   .toolbar button:hover{filter:brightness(.97)}
   .toolbar .spacer{flex:1}
   .toolbar .meta{font-size:12px;color:#6a6557;align-self:center}
+  .toolbar .sync{padding:4px 10px;border-radius:999px;background:#efe9db;border:1px solid #ddd3bf}
+  .toolbar .sync.live{background:#e6f4ea;border-color:#bfe0c8;color:#1f7a3f;font-weight:600}
 
   /* ---- preview ---- */
   .preview{overflow:auto;background:var(--desk)}
@@ -209,8 +211,11 @@
       <button class="primary" id="printBtn">Ispiši / spremi PDF</button>
       <button id="saveBtn">Spremi parametre (.json)</button>
       <button id="loadBtn">Učitaj parametre</button>
+      <button id="clearBtn">Očisti</button>
       <input type="file" id="fileIn" accept="application/json" style="display:none">
       <span class="spacer"></span>
+      <span class="meta sync" id="syncStatus"></span>
+      <span class="meta" id="saveStatus"></span>
       <span class="meta" id="meta"></span>
     </div>
     <div class="infocard">
@@ -221,10 +226,30 @@
   </main>
 </div>
 
+<!-- Firebase (compat) za sinkronizaciju u stvarnom vremenu. Ako se ne učita ili nije podešen config, alat radi lokalno. -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
 <script>
 (function(){
   "use strict";
   const $ = s => document.querySelector(s);
+
+  /* =================== SINKRONIZACIJA =====================
+     Da bi svi vidjeli iste dokumente uživo, zalijepite svoj Firebase config:
+       1) https://console.firebase.google.com  → novi projekt (besplatno)
+       2) Build → Realtime Database → Create database (npr. europe-west1)
+       3) Project settings → Your apps → Web (</>) → kopirajte vrijednosti niže
+     Svi koji otvore isti link s istim "#room=..." dijele iste dokumente.
+     Ako ostane prazno, alat radi kao i prije (lokalno + .json).            */
+  const FIREBASE_CONFIG = {
+    apiKey: "",
+    authDomain: "",
+    databaseURL: "",   // npr. https://vas-projekt-default-rtdb.europe-west1.firebasedatabase.app
+    projectId: "",
+    appId: ""
+  };
+  const ROOM_ID = ((location.hash.match(/room=([\w-]+)/)||[])[1]) || "zajednicki-1";
+  /* ======================================================= */
 
   const state = {
     naziv:"", skraceni:"", adresa:"", grad:"Zagreb", pecat:"",
@@ -236,6 +261,86 @@
     imovinaPrijenos:"",
     osnivaci:[{ime:"",oib:"",adresa:""},{ime:"",oib:"",adresa:""},{ime:"",oib:"",adresa:""},{ime:"",oib:"",adresa:""}]
   };
+
+  // ---------- auto-save (browser) ----------
+  const STORAGE_KEY="udruga_dok_generator_v1";
+  const DEFAULTS=JSON.parse(JSON.stringify(state));
+  let saveTimer=null;
+  function persist(){
+    clearTimeout(saveTimer);
+    saveTimer=setTimeout(function(){
+      try{
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+        const el=document.getElementById("saveStatus");
+        if(el){ const t=new Date(); el.textContent="Spremljeno u pregledniku · "+String(t.getHours()).padStart(2,"0")+":"+String(t.getMinutes()).padStart(2,"0"); }
+      }catch(e){ /* npr. Claude pregled ili privatni način rada — autosave preskočen */ }
+    },300);
+  }
+  function restore(){
+    try{
+      const raw=localStorage.getItem(STORAGE_KEY);
+      if(!raw) return false;
+      const obj=JSON.parse(raw);
+      Object.keys(state).forEach(function(k){ if(k in obj) state[k]=obj[k]; });
+      if(!Array.isArray(state.osnivaci)||!state.osnivaci.length) state.osnivaci=[{ime:"",oib:"",adresa:""}];
+      return true;
+    }catch(e){ return false; }
+  }
+  function syncInputs(skipFocused){
+    const af = skipFocused ? document.activeElement : null;
+    document.querySelectorAll("[data-k]").forEach(function(el){
+      if(el===af) return;
+      const k=el.getAttribute("data-k");
+      if(el.type==="checkbox") el.checked=!!state[k]; else el.value=(state[k]==null?"":state[k]);
+    });
+    const uo=document.getElementById("uoWrap"); if(uo) uo.style.display=state.upravniOdbor?"block":"none";
+  }
+
+  // ---------- realtime sync (optional, Firebase) ----------
+  let dbRef=null, presRef=null, syncing=false, applyingRemote=false;
+  function pushPath(k){ if(syncing && !applyingRemote && dbRef){ try{ dbRef.child(k).set(state[k]); }catch(e){} } }
+  function pushFounders(){ if(syncing && !applyingRemote && dbRef){ try{ dbRef.child("osnivaci").set(state.osnivaci); }catch(e){} } }
+  function pushAll(){ if(syncing && !applyingRemote && dbRef){ try{ dbRef.set(state); }catch(e){} } }
+  function setSyncStatus(txt, live){
+    const el=document.getElementById("syncStatus");
+    if(!el) return; el.textContent=txt; el.classList.toggle("live", !!live);
+  }
+  function applyRemote(remote){
+    if(!remote) return;
+    applyingRemote=true;
+    const inFounder = !!(document.activeElement && document.activeElement.closest && document.activeElement.closest("#founders"));
+    Object.keys(state).forEach(function(k){
+      if(!(k in remote)) return;
+      const el=document.querySelector('[data-k="'+k+'"]');
+      if(el && el===document.activeElement) return;        // ne gazi polje koje korisnik upravo tipka
+      state[k]=remote[k];
+    });
+    if(!Array.isArray(state.osnivaci)||!state.osnivaci.length) state.osnivaci=[{ime:"",oib:"",adresa:""}];
+    syncInputs(true);
+    if(!inFounder){ try{ renderFounders(); }catch(e){} }
+    render();
+    applyingRemote=false;
+  }
+  function initSync(){
+    if(!FIREBASE_CONFIG.databaseURL || typeof firebase==="undefined"){ setSyncStatus("Lokalno (bez sinkronizacije)", false); return; }
+    try{
+      firebase.initializeApp(FIREBASE_CONFIG);
+      const db=firebase.database();
+      dbRef=db.ref("rooms/"+ROOM_ID+"/state");
+      presRef=db.ref("rooms/"+ROOM_ID+"/presence");
+      syncing=true;
+      setSyncStatus("Povezivanje…", false);
+      dbRef.transaction(function(cur){ return cur===null ? state : cur; }); // zasij ako je prazno
+      dbRef.on("value", function(snap){ applyRemote(snap.val()); });
+      db.ref(".info/connected").on("value", function(s){
+        if(s.val()===true && presRef){ const me=presRef.push(); me.onDisconnect().remove(); me.set(Date.now()); }
+      });
+      presRef.on("value", function(s){
+        const n = s.numChildren ? s.numChildren() : 0;
+        setSyncStatus("● Uživo · "+n+" povezan"+(n===1?"":"ih")+" · soba: "+ROOM_ID, true);
+      });
+    }catch(e){ syncing=false; setSyncStatus("Greška u sinkronizaciji — radi lokalno", false); }
+  }
 
   const esc = v => String(v==null?"":v).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));
   const ph  = (v,l) => { v=(v||"").trim(); return v?esc(v):`<span class="ph">[${l}]</span>`; };
@@ -436,6 +541,7 @@
     $("#documents").innerHTML = docs.map(d=>`<section class="doc">${d[1]}</section>`).join("");
     const filled = activeFounders().length;
     $("#meta").textContent = `${state.naziv.trim()||"Bez naziva"} · ${filled} osnivač(a)`;
+    persist();
   }
 
   // ---------- founders UI ----------
@@ -461,6 +567,7 @@
     el.addEventListener("input",()=>{
       state[k] = el.type==="checkbox" ? el.checked : el.value;
       if(k==="upravniOdbor"){ $("#uoWrap").style.display = el.checked?"block":"none"; }
+      pushPath(k);
       render();
     });
   });
@@ -469,14 +576,14 @@
   $("#founders").addEventListener("input",e=>{
     const fk=e.target.getAttribute("data-fk"); if(!fk) return;
     const i=+e.target.getAttribute("data-i");
-    state.osnivaci[i][fk]=e.target.value; render();
+    state.osnivaci[i][fk]=e.target.value; pushFounders(); render();
   });
   $("#founders").addEventListener("click",e=>{
     const del=e.target.getAttribute("data-del"); if(del===null) return;
-    state.osnivaci.splice(+del,1); renderFounders(); render();
+    state.osnivaci.splice(+del,1); pushFounders(); renderFounders(); render();
   });
   $("#addFounder").addEventListener("click",()=>{
-    state.osnivaci.push({ime:"",oib:"",adresa:""}); renderFounders(); render();
+    state.osnivaci.push({ime:"",oib:"",adresa:""}); pushFounders(); renderFounders(); render();
   });
 
   // ---------- toolbar ----------
@@ -496,19 +603,25 @@
       const obj=JSON.parse(r.result);
       Object.keys(state).forEach(k=>{ if(k in obj) state[k]=obj[k]; });
       if(!Array.isArray(state.osnivaci)||!state.osnivaci.length) state.osnivaci=[{ime:"",oib:"",adresa:""}];
-      // resync inputs
-      document.querySelectorAll("[data-k]").forEach(el=>{
-        const k=el.getAttribute("data-k");
-        if(el.type==="checkbox") el.checked=!!state[k]; else el.value=state[k]==null?"":state[k];
-      });
-      $("#uoWrap").style.display=state.upravniOdbor?"block":"none";
-      renderFounders(); render();
+      syncInputs();
+      renderFounders(); render(); pushAll();
     }catch(err){ alert("Datoteka nije valjan .json (parametri)."); } };
     r.readAsText(f); e.target.value="";
   });
 
+  $("#clearBtn").addEventListener("click",()=>{
+    if(!confirm("Očistiti sve unesene podatke i spremljeno stanje u ovom pregledniku?")) return;
+    try{ localStorage.removeItem(STORAGE_KEY); }catch(e){}
+    Object.keys(DEFAULTS).forEach(k=>{ state[k]=JSON.parse(JSON.stringify(DEFAULTS[k])); });
+    syncInputs(); renderFounders(); render();
+    const el=document.getElementById("saveStatus"); if(el) el.textContent="";
+  });
+
+  restore();
+  syncInputs();
   renderFounders();
   render();
+  initSync();
 })();
 </script>
 </body>
