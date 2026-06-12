@@ -229,6 +229,7 @@
 <!-- Firebase (compat) za sinkronizaciju u stvarnom vremenu. Ako se ne učita ili nije podešen config, alat radi lokalno. -->
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 <script>
 (function(){
   "use strict";
@@ -321,10 +322,9 @@
     render();
     applyingRemote=false;
   }
-  function initSync(){
-    if(!FIREBASE_CONFIG.databaseURL || typeof firebase==="undefined"){ setSyncStatus("Lokalno (bez sinkronizacije)", false); return; }
+  function startDb(){
+    if(syncing) return;
     try{
-      firebase.initializeApp(FIREBASE_CONFIG);
       const db=firebase.database();
       dbRef=db.ref("rooms/"+ROOM_ID+"/state");
       presRef=db.ref("rooms/"+ROOM_ID+"/presence");
@@ -332,6 +332,7 @@
       setSyncStatus("Povezivanje…", false);
       dbRef.transaction(function(cur){ return cur===null ? state : cur; }); // zasij ako je prazno
       dbRef.on("value", function(snap){ applyRemote(snap.val()); });
+      dbRef.on("cancel", function(err){ setSyncStatus("Pristup odbijen — provjerite pravila baze", false); });
       db.ref(".info/connected").on("value", function(s){
         if(s.val()===true && presRef){ const me=presRef.push(); me.onDisconnect().remove(); me.set(Date.now()); }
       });
@@ -339,6 +340,24 @@
         const n = s.numChildren ? s.numChildren() : 0;
         setSyncStatus("● Uživo · "+n+" povezan"+(n===1?"":"ih")+" · soba: "+ROOM_ID, true);
       });
+    }catch(e){ syncing=false; setSyncStatus("Greška u bazi — radi lokalno", false); }
+  }
+  function initSync(){
+    if(!FIREBASE_CONFIG.databaseURL || typeof firebase==="undefined"){ setSyncStatus("Lokalno (bez sinkronizacije)", false); return; }
+    try{
+      firebase.initializeApp(FIREBASE_CONFIG);
+      if(firebase.auth){
+        setSyncStatus("Prijava…", false);
+        firebase.auth().onAuthStateChanged(function(user){ if(user) startDb(); });
+        firebase.auth().signInAnonymously().catch(function(e){
+          const code=(e&&e.code)||"";
+          if(code==="auth/operation-not-allowed") setSyncStatus("Uključite Anonymous prijavu u Firebase konzoli", false);
+          else if(code==="auth/configuration-not-found") setSyncStatus("Uključite Authentication (Anonymous) u konzoli", false);
+          else setSyncStatus("Prijava nije uspjela: "+(code||"greška"), false);
+        });
+      } else {
+        startDb(); // bez auth modula — pravila baze moraju dopuštati pristup
+      }
     }catch(e){ syncing=false; setSyncStatus("Greška u sinkronizaciji — radi lokalno", false); }
   }
 
