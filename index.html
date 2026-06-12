@@ -212,6 +212,7 @@
       <button id="saveBtn">Spremi parametre (.json)</button>
       <button id="loadBtn">Učitaj parametre</button>
       <button id="clearBtn">Očisti</button>
+      <button id="authBtn" style="display:none">Prijava Google računom</button>
       <input type="file" id="fileIn" accept="application/json" style="display:none">
       <span class="spacer"></span>
       <span class="meta sync" id="syncStatus"></span>
@@ -346,22 +347,43 @@
       });
     }catch(e){ syncing=false; setSyncStatus("Greška u bazi — radi lokalno", false); }
   }
+  function updateAuthUI(user){
+    const btn=document.getElementById("authBtn");
+    if(!btn) return;
+    btn.textContent = user ? ("Odjava ("+(user.email||user.displayName||"prijavljen")+")") : "Prijava Google računom";
+  }
+  function googleSignIn(){
+    try{
+      const provider=new firebase.auth.GoogleAuthProvider();
+      firebase.auth().signInWithPopup(provider).catch(function(e){
+        const c=(e&&e.code)||"";
+        if(c==="auth/unauthorized-domain") setSyncStatus("Dodajte domenu u Authentication → Settings → Authorized domains", false);
+        else if(c==="auth/operation-not-allowed") setSyncStatus("Uključite Google prijavu u Firebase konzoli", false);
+        else if(c==="auth/popup-blocked") setSyncStatus("Skočni prozor blokiran — dopustite popups pa pokušajte ponovo", false);
+        else if(c==="auth/popup-closed-by-user"){ /* korisnik zatvorio prozor */ }
+        else setSyncStatus("Prijava nije uspjela: "+(c||"greška"), false);
+      });
+    }catch(e){ setSyncStatus("Prijava nije uspjela", false); }
+  }
   function initSync(){
     if(!FIREBASE_CONFIG.databaseURL || typeof firebase==="undefined"){ setSyncStatus("Lokalno (bez sinkronizacije)", false); return; }
     try{
       firebase.initializeApp(FIREBASE_CONFIG);
-      if(firebase.auth){
-        setSyncStatus("Prijava…", false);
-        firebase.auth().onAuthStateChanged(function(user){ if(user) startDb(); });
-        firebase.auth().signInAnonymously().catch(function(e){
-          const code=(e&&e.code)||"";
-          if(code==="auth/operation-not-allowed") setSyncStatus("Uključite Anonymous prijavu u Firebase konzoli", false);
-          else if(code==="auth/configuration-not-found") setSyncStatus("Uključite Authentication (Anonymous) u konzoli", false);
-          else setSyncStatus("Prijava nije uspjela: "+(code||"greška"), false);
+      if(!firebase.auth){ startDb(); return; } // bez auth modula — pravila baze moraju dopuštati pristup
+      const btn=document.getElementById("authBtn");
+      if(btn){
+        btn.style.display="inline-block";
+        btn.addEventListener("click", function(){
+          const u=firebase.auth().currentUser;
+          if(u){ firebase.auth().signOut().then(function(){ location.reload(); }); }
+          else { googleSignIn(); }
         });
-      } else {
-        startDb(); // bez auth modula — pravila baze moraju dopuštati pristup
       }
+      firebase.auth().onAuthStateChanged(function(user){
+        updateAuthUI(user);
+        if(user){ startDb(); }
+        else { setSyncStatus("Prijavite se Google računom za sinkronizaciju", false); }
+      });
     }catch(e){ syncing=false; setSyncStatus("Greška u sinkronizaciji — radi lokalno", false); }
   }
 
