@@ -243,12 +243,15 @@
      Svi koji otvore isti link s istim "#room=..." dijele iste dokumente.
      Ako ostane prazno, alat radi kao i prije (lokalno + .json).            */
   const FIREBASE_CONFIG = {
-    apiKey: "",
-    authDomain: "",
-    databaseURL: "",   // npr. https://vas-projekt-default-rtdb.europe-west1.firebasedatabase.app
-    projectId: "",
-    appId: ""
-  };
+  apiKey: "AIzaSyB57deqRay6qTsd0H6ZymWm4qI3FHPYtnU",
+  authDomain: "sobica-457c9.firebaseapp.com",
+  databaseURL: "https://sobica-457c9-default-rtdb.europe-west1.firebasedatabase.app",
+  projectId: "sobica-457c9",
+  storageBucket: "sobica-457c9.firebasestorage.app",
+  messagingSenderId: "74210539250",
+  appId: "1:74210539250:web:bbe5a59a749a174c9b426b",
+  measurementId: "G-5BW3L3GMSW"
+};
   const ROOM_ID = ((location.hash.match(/room=([\w-]+)/)||[])[1]) || "zajednicki-1";
   /* ======================================================= */
 
